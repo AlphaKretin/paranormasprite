@@ -280,6 +280,33 @@ class BodyInfo:
     has_blush: bool          # True iff _BASE_FAMILY_RE matches body name
 
 
+def build_stem(char_code: str, body: str, core: str,
+               e_base, e_frame, m_base, m_frame,
+               use_rev=False, use_extra=False, use_blush=False) -> str:
+    """Build a filename stem matching composite_portraits.py's naming scheme."""
+    core = core or ""
+    if e_base and e_frame and m_base and m_frame:
+        e_u = expr_unique(e_base, core)
+        m_u = expr_unique(m_base, core)
+        e_part = f"e_{e_u}_{e_frame}" if e_u else f"e_{e_frame}"
+        m_part = f"m_{m_u}_{m_frame}" if m_u else f"m_{m_frame}"
+        stem = (f"{body}_{e_part}_{m_part}" if core == body
+                else f"{body}_{core}_{e_part}_{m_part}")
+    elif m_base and m_frame:
+        m_u = expr_unique(m_base, core)
+        m_part = f"m_{m_u}_{m_frame}" if m_u else f"m_{m_frame}"
+        stem = f"{body}_{m_part}" if core == body else f"{body}_{core}_{m_part}"
+    else:
+        stem = body
+    suffixes = []
+    if use_rev:   suffixes.append("rev")
+    if use_extra: suffixes.append("extra")
+    if use_blush: suffixes.append("blush")
+    if suffixes:
+        stem += "_" + "_".join(suffixes)
+    return f"{char_code}_{stem}"
+
+
 class BundleData:
     """
     Loads a Unity asset bundle and exposes all metadata needed by the viewer.

@@ -34,6 +34,8 @@ If neither game is detected, or if your Steam library is in a non-default locati
 2. Click a character's name to load them. Characters that have already been extracted show a **✓** prefix.
 3. The first time you select a character, their sprites are extracted from the game files and cached to disk. This takes a few seconds and only happens once per character.
 
+To extract all characters at once without opening each individually, click **Extract All**. A progress dialog will show which character is being processed; click **Cancel** to stop early (any characters extracted before cancellation are kept).
+
 ---
 
 ## Controls
@@ -59,6 +61,30 @@ Note that sprites do not always work identically - sometimes, having `(none)` ey
 ## Saving a portrait
 
 Click **Save Portrait** to export the current view as a PNG.
+
+---
+
+## Batch export
+
+Click **Batch Export…** to open the batch export window. This lets you export large numbers of portraits at once without composing each one by hand.
+
+**Selecting what to export**
+
+The tree shows all extracted characters, expandable to individual bodies and expressions. Check or uncheck items at any level — checking a parent automatically checks all its children, and the parent checkbox reflects the state of its children (solid if all selected, dashed if partially selected).
+
+Use **Select All** / **Unselect All** to check or clear the entire tree at once, including all variant flags.
+
+**Variant flags**
+
+Each body row has optional **Rev**, **Extra**, and **Blush** checkboxes on the right (greyed out if not applicable to that body). When one or more are checked, the batch export generates every combination of those flags alongside the base images — for example, enabling Rev and Blush on a body produces four images per expression: base, reversed, blushing, and reversed+blushing.
+
+**Estimating output**
+
+The status line below the tree shows the total image count and an estimated file size based on the body sprites already on disk. This is an approximation; actual PNG output size will vary.
+
+**Exporting**
+
+Choose an output folder with **Browse…**, then click **Export**. Images are saved to `{output folder}/{character code}/{filename}.png`, using the same naming scheme as single-portrait saves. A progress bar tracks the export; the dialog remains open when finished so you can review the count or export again with different settings.
 
 ---
 

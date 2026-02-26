@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
-from bundle_data import BundleData, expr_unique
+from batch_dialog import BatchExportDialog
+from bundle_data import BundleData, build_stem
 from bundle_catalog import BUNDLE_CATALOG, game_key_for_path
 from cache_manager import CacheManager
 from portrait_engine import PortraitEngine
@@ -16,7 +17,7 @@ from preview_widget import PreviewWidget
 from scanner import BundleScanner, find_streaming_assets
 from settings import SettingsManager
 from ui_controls import ControlPanel
-from worker import ExtractionWorker
+from worker import ExtractionWorker, ExtractAllWorker
 
 # Standard Steam base folders for both PARANORMASIGHT games.
 _STEAM_GAME_PATHS = [
@@ -113,6 +114,7 @@ class MainWindow(QMainWindow):
         self._current_bundle_data: BundleData | None = None
         self._portrait_engine: PortraitEngine | None = None
         self._extraction_worker: ExtractionWorker | None = None
+        self._extract_all_worker: ExtractAllWorker | None = None
         self._scan_thread: _ScanThread | None = None
         self._build_ui()
         self._restore_state()
@@ -160,6 +162,16 @@ class MainWindow(QMainWindow):
         self._char_list = QListWidget()
         self._char_list.currentItemChanged.connect(self._on_char_item_changed)
         left_layout.addWidget(self._char_list)
+
+        self._extract_all_btn = QPushButton("Extract All")
+        self._extract_all_btn.setEnabled(False)
+        self._extract_all_btn.clicked.connect(self._extract_all)
+        left_layout.addWidget(self._extract_all_btn)
+
+        self._batch_btn = QPushButton("Batch Export…")
+        self._batch_btn.setEnabled(False)
+        self._batch_btn.clicked.connect(self._open_batch_dialog)
+        left_layout.addWidget(self._batch_btn)
 
         # Right panel: controls + preview
         right_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -282,14 +294,90 @@ class MainWindow(QMainWindow):
         self._scan_results = results
         self._char_map = {r["bundle_path"]: r for r in results}
         self._char_list.clear()
+        any_extracted = False
         for entry in results:
             cached = (self._cache_mgr is not None
                       and self._cache_mgr.is_extracted(
                           entry["bundle_path"], entry["char_code"], entry["game_key"]))
+            if cached:
+                any_extracted = True
             label = ("✓ " if cached else "  ") + entry["display_name"]
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, entry["bundle_path"])
             self._char_list.addItem(item)
+        any_unextracted = any(
+            not (self._cache_mgr and self._cache_mgr.is_extracted(
+                r["bundle_path"], r["char_code"], r["game_key"]))
+            for r in results
+        )
+        self._batch_btn.setEnabled(any_extracted)
+        self._extract_all_btn.setEnabled(any_unextracted)
+
+    # ---- bulk extraction ----
+
+    def _extract_all(self):
+        unextracted = [
+            entry for entry in self._char_map.values()
+            if not (self._cache_mgr and self._cache_mgr.is_extracted(
+                entry["bundle_path"], entry["char_code"], entry["game_key"]))
+        ]
+        if not unextracted:
+            QMessageBox.information(self, "Extract All", "All characters are already extracted.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Extracting All Characters…")
+        dlg.setModal(True)
+        dlg.resize(420, 120)
+        v = QVBoxLayout(dlg)
+        status_lbl = QLabel("Preparing…")
+        bar = QProgressBar()
+        bar.setRange(0, len(unextracted))
+        bar.setValue(0)
+        close_btn = QPushButton("Cancel")
+        close_btn.clicked.connect(dlg.reject)
+        v.addWidget(status_lbl)
+        v.addWidget(bar)
+        v.addWidget(close_btn)
+
+        worker = ExtractAllWorker(
+            unextracted, self._settings.cache_dir, self._cache_mgr, self)
+        self._extract_all_worker = worker
+
+        def on_progress(idx, total, name):
+            bar.setValue(idx)
+            status_lbl.setText(f"Extracting {idx + 1}/{total}: {name}")
+
+        def on_char_done(bundle_path):
+            self._refresh_char_item(bundle_path)
+
+        def on_finished(success, errors):
+            bar.setValue(bar.maximum())
+            if errors:
+                status_lbl.setText(f"Done — {success} extracted, {errors} failed.")
+            else:
+                status_lbl.setText(f"Done — {success} characters extracted.")
+            close_btn.setText("Close")
+            self._batch_btn.setEnabled(True)
+            self._extract_all_btn.setEnabled(False)
+
+        def on_dialog_finished(_result):
+            # Disconnect before widgets are destroyed; cancel so the thread
+            # exits after the current bundle rather than running to completion.
+            try:
+                worker.progress.disconnect(on_progress)
+                worker.char_done.disconnect(on_char_done)
+                worker.finished.disconnect(on_finished)
+            except RuntimeError:
+                pass
+            worker.cancel()
+
+        worker.progress.connect(on_progress)
+        worker.char_done.connect(on_char_done)
+        worker.finished.connect(on_finished)
+        dlg.finished.connect(on_dialog_finished)
+        worker.start()
+        dlg.exec()
 
     # ---- character selection / extraction ----
 
@@ -340,6 +428,7 @@ class MainWindow(QMainWindow):
             dlg.accept()
             self._refresh_char_item(bundle_path)
             self._load_bundle_data(bundle_path, entry)
+            self._batch_btn.setEnabled(True)
 
         def on_error(_char_code, msg):
             dlg.accept()
@@ -404,42 +493,21 @@ class MainWindow(QMainWindow):
         self._preview.set_pixmap(pixmap)
 
     def _build_save_stem(self) -> str:
-        """Build a default filename stem matching composite_portraits.py's scheme."""
         if self._current_bundle_data is None:
             return "portrait"
-        sel       = self._controls.current_selection()
-        char_code = self._current_bundle_data.char_code
-        body      = sel["body"]
-        core      = sel["core"] or ""
-        e_base    = sel["eye_base"]
-        e_frame   = sel["eye_frame"]
-        m_base    = sel["mouth_base"]
-        m_frame   = sel["mouth_frame"]
+        sel = self._controls.current_selection()
+        return build_stem(
+            self._current_bundle_data.char_code,
+            sel["body"], sel["core"] or "",
+            sel["eye_base"], sel["eye_frame"],
+            sel["mouth_base"], sel["mouth_frame"],
+            sel["use_rev"], sel["use_extra"], sel["use_blush"],
+        )
 
-        if e_base and e_frame and m_base and m_frame:
-            e_u    = expr_unique(e_base, core)
-            m_u    = expr_unique(m_base, core)
-            e_part = f"e_{e_u}_{e_frame}" if e_u else f"e_{e_frame}"
-            m_part = f"m_{m_u}_{m_frame}" if m_u else f"m_{m_frame}"
-            if core == body:
-                stem = f"{body}_{e_part}_{m_part}"
-            else:
-                stem = f"{body}_{core}_{e_part}_{m_part}"
-        elif m_base and m_frame:
-            m_u    = expr_unique(m_base, core)
-            m_part = f"m_{m_u}_{m_frame}" if m_u else f"m_{m_frame}"
-            stem   = f"{body}_{m_part}" if core == body else f"{body}_{core}_{m_part}"
-        else:
-            stem = body
-
-        suffixes = []
-        if sel["use_rev"]:   suffixes.append("rev")
-        if sel["use_extra"]: suffixes.append("extra")
-        if sel["use_blush"]: suffixes.append("blush")
-        if suffixes:
-            stem = stem + "_" + "_".join(suffixes)
-
-        return f"{char_code}_{stem}"
+    def _open_batch_dialog(self):
+        dlg = BatchExportDialog(
+            self._char_map, self._cache_mgr, self._settings.cache_dir, self)
+        dlg.exec()
 
     def _save_portrait(self):
         pixmap = self._preview.current_pixmap()

@@ -38,6 +38,13 @@ class PortraitEngine:
 
         return layers
 
+    def render_pil(self, layers, sprite_rects, canvas_rect, char_code, flip=False) -> Image.Image:
+        """Return a PIL Image — safe to call from a worker thread."""
+        img = self._composite(layers, sprite_rects, canvas_rect, char_code)
+        if flip:
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+        return img
+
     def render(self, layers, sprite_rects, canvas_rect, char_code, flip=False) -> QPixmap:
         img = self._composite(layers, sprite_rects, canvas_rect, char_code)
         if flip:
