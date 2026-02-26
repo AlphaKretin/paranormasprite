@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
-from bundle_data import BundleData
+from bundle_data import BundleData, expr_unique
 from bundle_catalog import BUNDLE_CATALOG, game_key_for_path
 from cache_manager import CacheManager
 from portrait_engine import PortraitEngine
@@ -403,13 +403,52 @@ class MainWindow(QMainWindow):
         )
         self._preview.set_pixmap(pixmap)
 
+    def _build_save_stem(self) -> str:
+        """Build a default filename stem matching composite_portraits.py's scheme."""
+        if self._current_bundle_data is None:
+            return "portrait"
+        sel       = self._controls.current_selection()
+        char_code = self._current_bundle_data.char_code
+        body      = sel["body"]
+        core      = sel["core"] or ""
+        e_base    = sel["eye_base"]
+        e_frame   = sel["eye_frame"]
+        m_base    = sel["mouth_base"]
+        m_frame   = sel["mouth_frame"]
+
+        if e_base and e_frame and m_base and m_frame:
+            e_u    = expr_unique(e_base, core)
+            m_u    = expr_unique(m_base, core)
+            e_part = f"e_{e_u}_{e_frame}" if e_u else f"e_{e_frame}"
+            m_part = f"m_{m_u}_{m_frame}" if m_u else f"m_{m_frame}"
+            if core == body:
+                stem = f"{body}_{e_part}_{m_part}"
+            else:
+                stem = f"{body}_{core}_{e_part}_{m_part}"
+        elif m_base and m_frame:
+            m_u    = expr_unique(m_base, core)
+            m_part = f"m_{m_u}_{m_frame}" if m_u else f"m_{m_frame}"
+            stem   = f"{body}_{m_part}" if core == body else f"{body}_{core}_{m_part}"
+        else:
+            stem = body
+
+        suffixes = []
+        if sel["use_rev"]:   suffixes.append("rev")
+        if sel["use_extra"]: suffixes.append("extra")
+        if sel["use_blush"]: suffixes.append("blush")
+        if suffixes:
+            stem = stem + "_" + "_".join(suffixes)
+
+        return f"{char_code}_{stem}"
+
     def _save_portrait(self):
         pixmap = self._preview.current_pixmap()
         if pixmap is None or pixmap.isNull():
             QMessageBox.information(self, "Save", "No portrait to save.")
             return
+        default = self._build_save_stem() + ".png"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Portrait", "", "PNG Images (*.png)")
+            self, "Save Portrait", default, "PNG Images (*.png)")
         if path:
             pixmap.save(path, "PNG")
 
