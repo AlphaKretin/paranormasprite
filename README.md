@@ -52,6 +52,8 @@ Once a character is loaded, the right-hand panel lets you compose a portrait:
 
 Controls that are not applicable to the current body pose are automatically disabled. Some features only exist on TMC sprites.
 
+Note that sprites do not always work identically - sometimes, having `(none)` eye or mouth frame is one of the important frames, other times it will look broken.
+
 ---
 
 ## Saving a portrait

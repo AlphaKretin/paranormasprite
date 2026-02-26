@@ -126,14 +126,18 @@ class ControlPanel(QWidget):
 
         if bd and body_name and core:
             eye_frames = bd.available_eye_frames(body_name, core)
-            for e_base, frame in eye_frames:
-                self._eye_combo.addItem(f"{e_base}_{frame}", (e_base, frame))
+            if eye_frames:
+                self._eye_combo.addItem("(none)", None)
+                for e_base, frame in eye_frames:
+                    self._eye_combo.addItem(f"{e_base}_{frame}", (e_base, frame))
             self._eye_label.setVisible(bool(eye_frames))
             self._eye_combo.setVisible(bool(eye_frames))
 
             mouth_frames = bd.available_mouth_frames(body_name, core)
-            for m_base, frame in mouth_frames:
-                self._mouth_combo.addItem(f"{m_base}_{frame}", (m_base, frame))
+            if mouth_frames:
+                self._mouth_combo.addItem("(none)", None)
+                for m_base, frame in mouth_frames:
+                    self._mouth_combo.addItem(f"{m_base}_{frame}", (m_base, frame))
             self._mouth_label.setVisible(bool(mouth_frames))
             self._mouth_combo.setVisible(bool(mouth_frames))
         else:
