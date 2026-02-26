@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements_viewer.txt pyinstaller
+
+      - name: Build
+        run: pyinstaller viewer.spec
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ParanormaSprite.exe
