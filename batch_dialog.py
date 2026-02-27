@@ -170,6 +170,13 @@ class BatchExportDialog(QDialog):
         sel_hl.addWidget(sel_all_btn)
         sel_hl.addWidget(unsel_all_btn)
         sel_hl.addStretch()
+        self._one_expr_cb = QCheckBox("One expression per pose")
+        self._one_expr_cb.setToolTip(
+            "Export only the first available eye + mouth combination for each pose,\n"
+            "instead of every expression variant."
+        )
+        self._one_expr_cb.stateChanged.connect(self._on_one_expr_changed)
+        sel_hl.addWidget(self._one_expr_cb)
         self._sel_row.setVisible(False)
         root.addWidget(self._sel_row)
 
@@ -380,11 +387,33 @@ class BatchExportDialog(QDialog):
                 item.setCheckState(0, _PARTIAL)
             item = item.parent()
 
+    # ---- One-expression-per-pose mode ----
+
+    def _on_one_expr_changed(self):
+        one_expr = self._one_expr_cb.isChecked()
+        self._tree.blockSignals(True)
+        for char_item in self._char_items:
+            for b in range(char_item.childCount()):
+                body_item = char_item.child(b)
+                cur_flags = body_item.flags()
+                if one_expr:
+                    # Resolve partial → checked so bodies become clear leaf states
+                    if body_item.checkState(0) == _PARTIAL:
+                        body_item.setCheckState(0, _CHECKED)
+                    body_item.setFlags(cur_flags & ~Qt.ItemFlag.ItemIsAutoTristate)
+                else:
+                    body_item.setFlags(cur_flags | Qt.ItemFlag.ItemIsAutoTristate)
+                for c in range(body_item.childCount()):
+                    body_item.child(c).setHidden(one_expr)
+        self._tree.blockSignals(False)
+        self._update_count()
+
     # ---- Count / estimate ----
 
     def _update_count(self):
         total_count = 0
         total_bytes = 0
+        one_expr = self._one_expr_cb.isChecked()
         for char_item in self._char_items:
             for b in range(char_item.childCount()):
                 body_item  = char_item.child(b)
@@ -392,12 +421,24 @@ class BatchExportDialog(QDialog):
                 n_flags    = sum(1 for cb in flags.values() if cb.isEnabled() and cb.isChecked())
                 multiplier = 2 ** n_flags
                 body_bytes = self._body_sprite_sizes.get(id(body_item), 0)
-                for c in range(body_item.childCount()):
-                    core_item = body_item.child(c)
-                    if core_item.checkState(0) == _CHECKED:
-                        combo_count = core_item.data(0, _USER_ROLE)["combo_count"]
-                        total_count += combo_count * multiplier
-                        total_bytes += combo_count * multiplier * body_bytes
+                n_cores    = body_item.childCount()
+                if one_expr:
+                    # Exactly 1 image per checked body regardless of core count
+                    if body_item.checkState(0) == _CHECKED:
+                        total_count += multiplier
+                        total_bytes += multiplier * body_bytes
+                elif n_cores == 0:
+                    # No expression cores — body is directly checkable, exports 1 image
+                    if body_item.checkState(0) == _CHECKED:
+                        total_count += multiplier
+                        total_bytes += multiplier * body_bytes
+                else:
+                    for c in range(n_cores):
+                        core_item = body_item.child(c)
+                        if core_item.checkState(0) == _CHECKED:
+                            combo_count = core_item.data(0, _USER_ROLE)["combo_count"]
+                            total_count += combo_count * multiplier
+                            total_bytes += combo_count * multiplier * body_bytes
 
         if total_bytes >= 1024 ** 3:
             size_str = f"~{total_bytes / 1024 ** 3:.2f} GB"
@@ -445,16 +486,17 @@ class BatchExportDialog(QDialog):
     # ---- Export ----
 
     def _collect_tasks(self) -> list:
-        out_dir = self._out_edit.text()
-        tasks   = []
+        out_dir  = self._out_edit.text()
+        tasks    = []
+        one_expr = self._one_expr_cb.isChecked()
 
         for char_item in self._char_items:
-            char_data    = char_item.data(0, _USER_ROLE)
-            bundle_path  = char_data["bundle_path"]
-            char_code    = char_data["char_code"]
-            game_key     = char_data["game_key"]
-            sprites_dir  = os.path.join(self._cache_dir, game_key)
-            bd           = self._bundle_data.get(bundle_path)
+            char_data   = char_item.data(0, _USER_ROLE)
+            bundle_path = char_data["bundle_path"]
+            char_code   = char_data["char_code"]
+            game_key    = char_data["game_key"]
+            sprites_dir = os.path.join(self._cache_dir, game_key)
+            bd          = self._bundle_data.get(bundle_path)
             if bd is None:
                 continue
 
@@ -464,19 +506,44 @@ class BatchExportDialog(QDialog):
                 bi        = bd.get_body(body)
                 if bi is None:
                     continue
-                flags      = self._body_flags.get(id(body_item), {})
-                flag_sets  = _flag_subsets(flags)
+                flags     = self._body_flags.get(id(body_item), {})
+                flag_sets = _flag_subsets(flags)
+                n_cores   = body_item.childCount()
 
-                for c in range(body_item.childCount()):
-                    core_item = body_item.child(c)
-                    if core_item.checkState(0) != _CHECKED:
+                # Build list of (core, eyes, mouths) combos to export
+                combos = []  # [(core_str, [(e_base, e_frame)], [(m_base, m_frame)])]
+
+                if one_expr:
+                    if body_item.checkState(0) != _CHECKED:
                         continue
-                    core_data = core_item.data(0, _USER_ROLE)
-                    core      = core_data["core"]
+                    # Exactly one image per body: first core (if any), first eye+mouth
+                    if n_cores > 0:
+                        first_core = body_item.child(0).data(0, _USER_ROLE)["core"]
+                        eyes   = (bd.available_eye_frames(body, first_core) or [(None, None)])[:1]
+                        mouths = (bd.available_mouth_frames(body, first_core) or [(None, None)])[:1]
+                    else:
+                        first_core = body
+                        eyes   = [(None, None)]
+                        mouths = [(None, None)]
+                    combos.append((first_core, eyes, mouths))
 
-                    eyes   = bd.available_eye_frames(body, core) or [(None, None)]
-                    mouths = bd.available_mouth_frames(body, core) or [(None, None)]
+                elif n_cores == 0:
+                    # No expression cores — export body as a single image if checked
+                    if body_item.checkState(0) != _CHECKED:
+                        continue
+                    combos.append((body, [(None, None)], [(None, None)]))
 
+                else:
+                    for c in range(n_cores):
+                        core_item = body_item.child(c)
+                        if core_item.checkState(0) != _CHECKED:
+                            continue
+                        core   = core_item.data(0, _USER_ROLE)["core"]
+                        eyes   = bd.available_eye_frames(body, core) or [(None, None)]
+                        mouths = bd.available_mouth_frames(body, core) or [(None, None)]
+                        combos.append((core, eyes, mouths))
+
+                for core, eyes, mouths in combos:
                     for e_base, e_frame in eyes:
                         for m_base, m_frame in mouths:
                             for flag_set in flag_sets:
