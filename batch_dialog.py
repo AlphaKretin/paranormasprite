@@ -44,7 +44,10 @@ class _BundleLoadThread(QThread):
         for i, entry in enumerate(self._entries):
             self.progress.emit(i, total)
             try:
-                bd = BundleData(entry["bundle_path"])
+                if entry.get("imported"):
+                    bd = BundleData.from_cache_data(entry["char_data"])
+                else:
+                    bd = BundleData(entry["bundle_path"])
                 result[entry["bundle_path"]] = bd
             except Exception:
                 pass

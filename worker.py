@@ -7,7 +7,8 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from reconstruct_sprites import process_bundle  # noqa: E402
+from bundle_data import BundleData, serialise_for_cache  # noqa: E402
+from reconstruct_sprites import process_bundle            # noqa: E402
 
 
 class ExtractAllWorker(QThread):
@@ -43,6 +44,12 @@ class ExtractAllWorker(QThread):
                 self._cache_manager.record_extracted(
                     entry["bundle_path"], entry["char_code"],
                     entry["game_key"], sprite_count)
+                try:
+                    bd = BundleData(entry["bundle_path"])
+                    self._cache_manager.record_cache_data(
+                        serialise_for_cache(entry, bd))
+                except Exception:
+                    pass  # Non-fatal — viewer still works without cache_data.json
                 self.char_done.emit(entry["bundle_path"])
             except Exception:
                 errors += 1

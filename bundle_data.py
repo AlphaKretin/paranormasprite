@@ -280,6 +280,31 @@ class BodyInfo:
     has_blush: bool          # True iff _BASE_FAMILY_RE matches body name
 
 
+def serialise_for_cache(entry: dict, bd: "BundleData") -> dict:
+    """Return a dict suitable for storage in cache_data.json."""
+    return {
+        "char_code":    bd.char_code,
+        "display_name": entry["display_name"],
+        "game_key":     entry["game_key"],
+        "sprite_rects": {k: list(v) for k, v in bd.sprite_rects.items()},
+        "bodies": [
+            {
+                "name":               bi.name,
+                "canvas_rect":        list(bi.canvas_rect),
+                "valid_pair_cores":   bi.valid_pair_cores,
+                "valid_mouth_cores":  bi.valid_mouth_cores,
+                "eye_by_core":        bi.eye_by_core,
+                "mouth_by_core":      bi.mouth_by_core,
+                "add_info":           bi.add_info,
+                "has_rev":            bi.has_rev,
+                "has_extras":         bi.has_extras,
+                "has_blush":          bi.has_blush,
+            }
+            for bi in bd.bodies
+        ],
+    }
+
+
 def build_stem(char_code: str, body: str, core: str,
                e_base, e_frame, m_base, m_frame,
                use_rev=False, use_extra=False, use_blush=False) -> str:
@@ -312,6 +337,31 @@ class BundleData:
     Loads a Unity asset bundle and exposes all metadata needed by the viewer.
     Does NOT read any extracted PNG files — that is handled by PortraitEngine.
     """
+
+    @classmethod
+    def from_cache_data(cls, d: dict) -> "BundleData":
+        """Reconstruct a BundleData from a cache_data.json character entry (no file I/O)."""
+        obj = cls.__new__(cls)
+        obj.char_code    = d["char_code"]
+        obj.sprite_rects = {k: tuple(v) for k, v in d.get("sprite_rects", {}).items()}
+        obj.bodies       = []
+        obj._body_index  = {}
+        for b in d.get("bodies", []):
+            bi = BodyInfo(
+                name              = b["name"],
+                canvas_rect       = tuple(b["canvas_rect"]),
+                valid_pair_cores  = b["valid_pair_cores"],
+                valid_mouth_cores = b["valid_mouth_cores"],
+                eye_by_core       = b["eye_by_core"],
+                mouth_by_core     = b["mouth_by_core"],
+                add_info          = b["add_info"],
+                has_rev           = b["has_rev"],
+                has_extras        = b["has_extras"],
+                has_blush         = b["has_blush"],
+            )
+            obj.bodies.append(bi)
+            obj._body_index[bi.name] = bi
+        return obj
 
     def __init__(self, bundle_path: str):
         self.char_code: str = ""

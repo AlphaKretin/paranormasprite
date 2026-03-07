@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -9,9 +10,9 @@ from PySide6.QtWidgets import (
 )
 
 from batch_dialog import BatchExportDialog
-from bundle_data import BundleData, build_stem
+from bundle_data import BundleData, build_stem, serialise_for_cache
 from bundle_catalog import BUNDLE_CATALOG, game_key_for_path
-from cache_manager import CacheManager
+from cache_manager import CacheManager, IMPORTED_PREFIX
 from portrait_engine import PortraitEngine
 from preview_widget import PreviewWidget
 from scanner import BundleScanner, find_streaming_assets
@@ -31,7 +32,8 @@ _APP_DIR = (
     if getattr(sys, "frozen", False)
     else os.path.dirname(os.path.abspath(__file__))
 )
-_DEFAULT_CACHE = os.path.join(_APP_DIR, "cache")
+_DEFAULT_CACHE   = os.path.join(_APP_DIR, "cache")
+_CACHE_DATA_FILE = "cache_data.json"
 
 
 class _ScanThread(QThread):
@@ -116,6 +118,7 @@ class MainWindow(QMainWindow):
         self._extraction_worker: ExtractionWorker | None = None
         self._extract_all_worker: ExtractAllWorker | None = None
         self._scan_thread: _ScanThread | None = None
+        self._imported_entries: dict = {}  # synthetic_key → entry
         self._build_ui()
         self._restore_state()
 
@@ -205,6 +208,7 @@ class MainWindow(QMainWindow):
 
         self._settings.cache_dir = _DEFAULT_CACHE
         self._init_cache_mgr()
+        self._load_imported_cache()
 
         saved    = self._settings.game_dirs
         detected = self._auto_detect_game_dirs()
@@ -219,6 +223,9 @@ class MainWindow(QMainWindow):
 
         if merged:
             self._scan_characters()
+        elif self._imported_entries:
+            self._char_map = dict(self._imported_entries)
+            self._refresh_char_list_from_map()
         else:
             QMessageBox.information(
                 self, "No game found",
@@ -238,6 +245,39 @@ class MainWindow(QMainWindow):
         if self._portrait_engine is None:
             self._portrait_engine = PortraitEngine(cache_dir)
         return True
+
+    def _load_imported_cache(self):
+        """Read cache_data.json from the cache directory and register any characters found."""
+        path = os.path.join(self._settings.cache_dir, _CACHE_DATA_FILE)
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        self._imported_entries.clear()
+        for char in data.get("characters", []):
+            char_code    = char.get("char_code", "")
+            display_name = char.get("display_name", char_code)
+            game_key     = char.get("game_key", "")
+            if not char_code:
+                continue
+            bundle_path = f"{IMPORTED_PREFIX}{game_key}/{char_code}"
+            self._imported_entries[bundle_path] = {
+                "char_code":    char_code,
+                "display_name": display_name,
+                "bundle_path":  bundle_path,
+                "bundle_name":  char_code,
+                "game_key":     game_key,
+                "imported":     True,
+                "char_data":    char,
+            }
+
+    def _update_cache_data(self, entry: dict, bd: BundleData):
+        """Serialize a character's BundleData into cache_data.json (creates or updates)."""
+        if self._cache_mgr:
+            self._cache_mgr.record_cache_data(serialise_for_cache(entry, bd))
 
     def _sprites_dir_for(self, entry: dict) -> str:
         """Return the sprites root for a character: {cache_dir}/{game_key}/"""
@@ -278,7 +318,8 @@ class MainWindow(QMainWindow):
     def _scan_characters(self):
         game_dirs = self._settings.game_dirs
         if not game_dirs:
-            self._char_list.clear()
+            self._char_map = dict(self._imported_entries)
+            self._refresh_char_list_from_map()
             return
         self._char_list.clear()
         self._char_list.addItem("Scanning…")
@@ -293,25 +334,35 @@ class MainWindow(QMainWindow):
     def _on_scan_done(self, results: list):
         self._scan_results = results
         self._char_map = {r["bundle_path"]: r for r in results}
+        # Merge imported entries for characters not covered by the game scan.
+        existing = {(r["char_code"], r["game_key"]) for r in results}
+        for key, entry in self._imported_entries.items():
+            if (entry["char_code"], entry["game_key"]) not in existing:
+                self._char_map[key] = entry
+        self._refresh_char_list_from_map()
+
+    def _refresh_char_list_from_map(self):
         self._char_list.clear()
-        any_extracted = False
-        for entry in results:
-            cached = (self._cache_mgr is not None
-                      and self._cache_mgr.is_extracted(
-                          entry["bundle_path"], entry["char_code"], entry["game_key"]))
+        any_extracted        = False
+        any_game_unextracted = False
+        for entry in self._char_map.values():
+            if entry.get("imported"):
+                cached = os.path.isdir(os.path.join(
+                    self._settings.cache_dir, entry["game_key"], entry["char_code"]))
+            else:
+                cached = (self._cache_mgr is not None
+                          and self._cache_mgr.is_extracted(
+                              entry["bundle_path"], entry["char_code"], entry["game_key"]))
+                if not cached:
+                    any_game_unextracted = True
             if cached:
                 any_extracted = True
             label = ("✓ " if cached else "  ") + entry["display_name"]
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, entry["bundle_path"])
             self._char_list.addItem(item)
-        any_unextracted = any(
-            not (self._cache_mgr and self._cache_mgr.is_extracted(
-                r["bundle_path"], r["char_code"], r["game_key"]))
-            for r in results
-        )
         self._batch_btn.setEnabled(any_extracted)
-        self._extract_all_btn.setEnabled(any_unextracted)
+        self._extract_all_btn.setEnabled(any_game_unextracted)
 
     # ---- bulk extraction ----
 
@@ -396,6 +447,10 @@ class MainWindow(QMainWindow):
         if not self._cache_mgr:
             self._init_cache_mgr()
 
+        if entry.get("imported"):
+            self._load_bundle_data(bundle_path, entry)
+            return
+
         char_code = entry["char_code"]
         game_key  = entry["game_key"]
 
@@ -461,7 +516,11 @@ class MainWindow(QMainWindow):
             self._portrait_engine.set_sprites_dir(sprites_dir)
             self._portrait_engine.clear_cache()
         try:
-            bd = BundleData(bundle_path)
+            if entry.get("imported"):
+                bd = BundleData.from_cache_data(entry["char_data"])
+            else:
+                bd = BundleData(bundle_path)
+                self._update_cache_data(entry, bd)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load bundle data:\n{e}")
             return
